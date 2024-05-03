@@ -11,6 +11,8 @@ warnings.simplefilter('once')
 # implemented kernels & examples of their associated hyperparameters
 KERNELS = {
     "Exp": ['gp_length', 'gp_amp'],
+    "ExpPow":['gp_length','gp_amp','gp_pow'],
+    "RatQuad":['gp_length','gp_amp','gp_pow'],
     "SqExp": ['gp_length', 'gp_amp'],
     "Per": ['gp_per', 'gp_length', 'gp_amp'],
     "QuasiPer": ['gp_per', 'gp_perlength', 'gp_explength', 'gp_amp'],
@@ -463,7 +465,7 @@ CeleriteKernel requires hyperparameters 'gp_B*', 'gp_C*', 'gp_L', and 'gp_Prot*'
     # MM doesn't work...
 
 
-## MM new class... 
+## MM new classes...
 class ExpKernel(Kernel):
     """
     Class that computes and stores a squared exponential kernel matrix.
@@ -471,7 +473,7 @@ class ExpKernel(Kernel):
 
     .. math::
 
-        C_{ij} = \\eta_1^2 * exp( \\frac{ -|t_i - t_j| }{ \\eta_2 } )
+        C_{ij} = \\eta_1^2 * exp( \ \left(\frac{ -|t_i - t_j| }{ \\eta_2 }\right)^\\eta_3 )
 
     Args:
         hparams (dict of radvel.Parameter): dictionary containing
@@ -497,14 +499,14 @@ class ExpKernel(Kernel):
 
         assert len(hparams) == 2, \
             "ExpKernel requires exactly 2 hyperparameters with names" \
-            + "'gp_length*' and 'gp_amp*'."
+            + "'gp_length*' and 'gp_amp*' ."
 
         try:
             self.hparams['gp_length'].value
             self.hparams['gp_amp'].value
         except KeyError:
             raise KeyError("ExpKernel requires hyperparameters 'gp_length*'" \
-                           + " and 'gp_amp*'.")
+                           + "and 'gp_amp*' .")
         except AttributeError:
             raise AttributeError("ExpKernel requires dictionary of" \
                                  + " radvel.Parameter objects as input.")
@@ -533,6 +535,180 @@ class ExpKernel(Kernel):
         amp = self.hparams['gp_amp'].value
 
         K = amp**2 * scipy.exp(-np.sqrt(self.dist)/length )
+
+        self.covmatrix = K
+        # add errors along the diagonal
+        try:
+            self.covmatrix += (errors**2) * np.identity(K.shape[0])
+        except ValueError: # errors can't be added along diagonal to a non-square array
+            pass
+
+        return self.covmatrix
+
+
+
+
+    
+class ExpPowKernel(Kernel):
+    """
+    Class that computes and stores a squared exponential kernel matrix.
+    An arbitrary element, :math:`C_{ij}`, of the matrix is:
+
+    .. math::
+
+        C_{ij} = \\eta_1^2 * exp( \ \left(\frac{ -|t_i - t_j| }{ \\eta_2 }\right)^\\eta_3 )
+
+    Args:
+        hparams (dict of radvel.Parameter): dictionary containing
+            radvel.Parameter objects that are GP hyperparameters
+            of this kernel. Must contain exactly two objects, 'gp_length*'
+            and 'gp_amp*', where * is a suffix identifying
+            these hyperparameters with a likelihood object. 
+
+    """
+
+    @property
+    def name(self):
+        return "ExpPow"
+
+    def __init__(self, hparams):
+        self.covmatrix = None
+        self.hparams = {}
+        for par in hparams:
+            if par.startswith('gp_length'):
+                self.hparams['gp_length'] = hparams[par]
+            if par.startswith('gp_amp'):
+                self.hparams['gp_amp'] = hparams[par]
+            if par.startswith('gp_pow'):
+                self.hparams['gp_pow'] = hparams[par]
+
+        assert len(hparams) == 3, \
+            "ExpPowKernel requires exactly 3 hyperparameters with names" \
+            + "'gp_length*', 'gp_amp*', and 'gp_pow*' ."
+
+        try:
+            self.hparams['gp_length'].value
+            self.hparams['gp_amp'].value
+            self.hparams['gp_pow'].value
+        except KeyError:
+            raise KeyError("ExpPowKernel requires hyperparameters 'gp_length*'" \
+                           + " 'gp_amp*' and 'gp_pow*' .")
+        except AttributeError:
+            raise AttributeError("ExpPowKernel requires dictionary of" \
+                                 + " radvel.Parameter objects as input.")
+
+    def __repr__(self):
+        length = self.hparams['gp_length'].value
+        amp = self.hparams['gp_amp'].value
+        power = self.hparams['gp_amp'].value
+        return "Exp Kernel with length: {}, amp: {}, power: {}".format(length, amp,power)
+
+    def compute_distances(self, x1, x2):
+        X1 = np.array([x1]).T
+        X2 = np.array([x2]).T
+        self.dist = scipy.spatial.distance.cdist(X1, X2, 'sqeuclidean')
+
+    def compute_covmatrix(self, errors):
+        """ Compute the covariance matrix, and optionally add errors along
+            the diagonal.
+
+            Args:
+                errors (float or numpy array): If covariance matrix is non-square,
+                    this arg must be set to 0. If covariance matrix is square,
+                    this can be a numpy array of observational errors and jitter
+                    added in quadrature.
+        """
+        length = self.hparams['gp_length'].value
+        amp = self.hparams['gp_amp'].value
+        power = self.hparams['gp_pow'].value
+
+        K = amp**2 * scipy.exp(-(np.sqrt(self.dist)/length)**power )
+
+        self.covmatrix = K
+        # add errors along the diagonal
+        try:
+            self.covmatrix += (errors**2) * np.identity(K.shape[0])
+        except ValueError: # errors can't be added along diagonal to a non-square array
+            pass
+
+        return self.covmatrix
+
+
+    
+class RatQuadKernel(Kernel):
+    """
+    Class that computes and stores a Rational Quadratic kernel matrix.
+    An arbitrary element, :math:`C_{ij}`, of the matrix is:
+
+    .. math::
+
+        C_{ij} = \\eta_1^2 * \ \left(1 + \frac{ -|t_i - t_j|^2 }{ 2\eta_3 \eta_2^2 }\right)^\\eta_3 )
+
+    Args:
+        hparams (dict of radvel.Parameter): dictionary containing
+            radvel.Parameter objects that are GP hyperparameters
+            of this kernel. Must contain exactly two objects, 'gp_length*'
+            and 'gp_amp*', where * is a suffix identifying
+            these hyperparameters with a likelihood object. 
+
+    """
+
+    @property
+    def name(self):
+        return "RatQuad"
+
+    def __init__(self, hparams):
+        self.covmatrix = None
+        self.hparams = {}
+        for par in hparams:
+            if par.startswith('gp_length'):
+                self.hparams['gp_length'] = hparams[par]
+            if par.startswith('gp_amp'):
+                self.hparams['gp_amp'] = hparams[par]
+            if par.startswith('gp_pow'):
+                self.hparams['gp_pow'] = hparams[par]
+
+        assert len(hparams) == 3, \
+            "ExpPowKernel requires exactly 3 hyperparameters with names" \
+            + "'gp_length*', 'gp_amp*', and 'gp_pow*' ."
+
+        try:
+            self.hparams['gp_length'].value
+            self.hparams['gp_amp'].value
+            self.hparams['gp_pow'].value
+        except KeyError:
+            raise KeyError("ExpPowKernel requires hyperparameters 'gp_length*'" \
+                           + " 'gp_amp*' and 'gp_pow*' .")
+        except AttributeError:
+            raise AttributeError("ExpPowKernel requires dictionary of" \
+                                 + " radvel.Parameter objects as input.")
+
+    def __repr__(self):
+        length = self.hparams['gp_length'].value
+        amp = self.hparams['gp_amp'].value
+        power = self.hparams['gp_amp'].value
+        return "Rational Quadratic Kernel with length: {}, amp: {}, power: {}".format(length, amp,power)
+
+    def compute_distances(self, x1, x2):
+        X1 = np.array([x1]).T
+        X2 = np.array([x2]).T
+        self.dist = scipy.spatial.distance.cdist(X1, X2, 'sqeuclidean')
+
+    def compute_covmatrix(self, errors):
+        """ Compute the covariance matrix, and optionally add errors along
+            the diagonal.
+
+            Args:
+                errors (float or numpy array): If covariance matrix is non-square,
+                    this arg must be set to 0. If covariance matrix is square,
+                    this can be a numpy array of observational errors and jitter
+                    added in quadrature.
+        """
+        length = self.hparams['gp_length'].value
+        amp = self.hparams['gp_amp'].value
+        power = self.hparams['gp_pow'].value
+
+        K = amp**2 * (1.0 + self.dist/(2*power*length**2))**-power 
 
         self.covmatrix = K
         # add errors along the diagonal
